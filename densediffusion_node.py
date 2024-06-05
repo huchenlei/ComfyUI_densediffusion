@@ -97,7 +97,10 @@ class DenseDiffusionAddCondNode:
         strength: float,
     ) -> tuple[ComfyUIConditioning]:
         work_model: ModelPatcher = model.clone()
-        work_model.model_options["transformer_options"]["dense_diffusion_cond"] = (
+        work_model.model_options["transformer_options"].set_default(
+            "dense_diffusion_cond", []
+        )
+        work_model.model_options["transformer_options"]["dense_diffusion_cond"].append(
             DenseDiffusionConditioning(
                 conds=[c for c, _ in conditioning], mask=mask * strength
             )
