@@ -1,12 +1,12 @@
 from __future__ import annotations
 import itertools
+import math
 from typing import NamedTuple
 
 import torch
 
 import comfy
 from comfy.model_patcher import ModelPatcher
-from comfy.ldm.modules.attention import optimized_attention
 
 from .enums import StableDiffusionVersion
 
@@ -38,6 +38,25 @@ class DenseDiffusionConditioning(NamedTuple):
 
 
 class OmostDenseDiffusionCrossAttention(torch.nn.Module):
+    @staticmethod
+    def scaled_dot_product_attention(
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        mask_bool: torch.Tensor | None = None,
+        mask_scale: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        scale_factor = 1 / math.sqrt(query.size(-1))
+        attn_weight = query @ key.transpose(-2, -1) * scale_factor
+
+        if mask_scale is not None:
+            attn_weight = attn_weight * mask_scale.to(attn_weight)
+        if mask_bool is not None:
+            attn_weight.masked_fill_(mask_bool.logical_not(), float("-inf"))
+
+        attn_weight = torch.softmax(attn_weight, dim=-1)
+        return attn_weight @ value
+
     def forward(
         self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, extra_options: dict
     ):
@@ -51,7 +70,44 @@ class OmostDenseDiffusionCrossAttention(torch.nn.Module):
 
         https://github.com/lllyasviel/Omost/blob/731e74922fc6be91171688574d07624f93d3b658/lib_omost/pipeline.py#L129-L173
         """
-        return optimized_attention(q, k, v, extra_options["n_heads"])
+        heads: int = extra_options["n_heads"]
+
+        b, _, dim_head = q.shape
+        dim_head //= heads
+        q, k, v = map(
+            lambda t: t.view(b, -1, heads, dim_head).transpose(1, 2),
+            (q, k, v),
+        )
+
+        dd_conds: list[DenseDiffusionConditioning] = extra_options.get("dd_conds", [])
+        if dd_conds:
+            B, C, H, W = extra_options["original_shape"]
+            masks = []
+            for dd_cond in dd_conds:
+                m = (
+                    torch.nn.functional.interpolate(
+                        dd_cond.mask[None, None, :, :], (H, W), mode="nearest-exact"
+                    )
+                    .flatten()
+                    .unsqueeze(1)
+                    .repeat(1, dd_cond.cond.size(1))
+                )
+                masks.append(m)
+            masks = torch.cat(masks, dim=1)
+
+            mask_bool = masks > 0.5
+            mask_scale = (H * W) / torch.sum(masks, dim=0, keepdim=True)
+            mask_bool = mask_bool[None, None, :, :].repeat(q.size(0), q.size(1), 1, 1)
+            mask_scale = mask_scale[None, None, :, :].repeat(q.size(0), q.size(1), 1, 1)
+        else:
+            mask_bool = None
+            mask_scale = None
+
+        out = self.scaled_dot_product_attention(
+            q, k, v, mask_bool=mask_bool, mask_scale=mask_scale
+        )
+        out = out.transpose(1, 2).reshape(b, -1, heads * dim_head)
+        return out
 
 
 class DenseDiffusionApplyNode:
