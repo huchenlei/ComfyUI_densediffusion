@@ -30,14 +30,27 @@ def get_sd_version(model: ModelPatcher) -> StableDiffusionVersion:
 
 
 class DenseDiffusionConditioning(NamedTuple):
-    # List of text embeddings
-    conds: list[torch.Tensor]
+    # Text embeddings
+    cond: torch.Tensor
     # The mask to apply. Shape: [H, W]
     mask: torch.Tensor
+    pooled_output: torch.Tensor | None = None
 
 
-class DenseDiffusionCrossAttention(torch.nn.Module):
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, extra_options):
+class OmostDenseDiffusionCrossAttention(torch.nn.Module):
+    def forward(
+        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, extra_options: dict
+    ):
+        """
+        y=softmax(modify(q@k))@v
+        where modify() is a complicated non-linear function with many normalizations
+        and tricks to change the score's distributions.
+
+        This function implements the `modify` function used in Omost, instead
+        of the original DenseDiffusion repo.
+
+        https://github.com/lllyasviel/Omost/blob/731e74922fc6be91171688574d07624f93d3b658/lib_omost/pipeline.py#L129-L173
+        """
         return optimized_attention(q, k, v, extra_options["n_heads"])
 
 
@@ -46,7 +59,7 @@ class DenseDiffusionApplyNode:
     def INPUT_TYPES(s):
         return {"required": {"model": ("MODEL",)}}
 
-    RETURN_TYPES = ("MODEL",)
+    RETURN_TYPES = ("MODEL", "CONDITIONING")
     FUNCTION = "apply"
     CATEGORY = "DenseDiffusion"
     DESCRIPTION = "Apply DenseDiffusion model."
@@ -60,13 +73,26 @@ class DenseDiffusionApplyNode:
         input_ids, output_ids, middle_ids = sd_version.transformer_ids
         for transformer_id in itertools.chain(input_ids, output_ids, middle_ids):
             work_model.set_model_attn2_replace(
-                DenseDiffusionCrossAttention(),
+                OmostDenseDiffusionCrossAttention(),
                 block_name=transformer_id.block_type.value,
                 number=transformer_id.block_id,
                 # transformer_index param here specifies the depth index of the transformer
                 transformer_index=transformer_id.block_index,
             )
-        return (work_model,)
+
+        dd_conds: list[DenseDiffusionConditioning] = work_model.model_options[
+            "transformer_options"
+        ].get("dense_diffusion_cond", [])
+        assert dd_conds, "No DenseDiffusion conditioning found!"
+        cond = [
+            [
+                # cond
+                torch.cat([dd_cond.cond for dd_cond in dd_conds], dim=1),
+                # pooled_output
+                {"pooled_output": dd_conds[0].pooled_output},
+            ]
+        ]
+        return (work_model, cond)
 
 
 class DenseDiffusionAddCondNode:
@@ -97,15 +123,22 @@ class DenseDiffusionAddCondNode:
         strength: float,
     ) -> tuple[ComfyUIConditioning]:
         work_model: ModelPatcher = model.clone()
-        work_model.model_options["transformer_options"].set_default(
+        work_model.model_options["transformer_options"].setdefault(
             "dense_diffusion_cond", []
         )
+        assert len(conditioning) == 1
+        cond, extra_fields = conditioning[0]
+        assert isinstance(extra_fields, dict)
+        assert "pooled_output" in extra_fields
+
         work_model.model_options["transformer_options"]["dense_diffusion_cond"].append(
             DenseDiffusionConditioning(
-                conds=[c for c, _ in conditioning], mask=mask * strength
+                cond=cond,
+                mask=mask * strength,
+                pooled_output=extra_fields["pooled_output"],
             )
         )
-        return (work_model,)
+        return (work_model, conditioning)
 
 
 NODE_CLASS_MAPPINGS = {
