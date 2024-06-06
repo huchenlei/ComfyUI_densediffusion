@@ -8,3 +8,5 @@ The original DenseDiffusion's implementation does not perform very well accordin
 ## How to use
 ![image](https://github.com/huchenlei/ComfyUI_densediffusion/assets/20929282/d75c1354-8f62-4e84-9b9c-67698e2a5f32)
 
+## Limitation [IMPORTANT]
+Currently ComfyUI's attention replacements do not compose with each other, so this regional prompt method does not compose with IPAdapter. I am currently working on a universal model patcher to solve this issue.
