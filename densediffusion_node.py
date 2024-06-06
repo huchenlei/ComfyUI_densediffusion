@@ -39,6 +39,16 @@ class DenseDiffusionConditioning(NamedTuple):
 
 class OmostDenseDiffusionCrossAttention(torch.nn.Module):
     @staticmethod
+    def calc_hidden_state_shape(
+        sequence_length: int, H: int, W: int
+    ) -> tuple[int, int]:
+        # sequence_length = mask_h * mask_w
+        # sequence_length = (latent_height * factor) * (latent_height * factor)
+        # sequence_length = (latent_height * latent_height) * factor ^ 2
+        factor = math.sqrt(sequence_length / (H * W))
+        return int(H * factor), int(W * factor)
+
+    @staticmethod
     def scaled_dot_product_attention(
         query: torch.Tensor,
         key: torch.Tensor,
@@ -50,7 +60,7 @@ class OmostDenseDiffusionCrossAttention(torch.nn.Module):
         attn_weight = query @ key.transpose(-2, -1) * scale_factor
 
         if mask_scale is not None:
-            attn_weight = attn_weight * mask_scale.to(attn_weight)
+            attn_weight = attn_weight * mask_scale
         if mask_bool is not None:
             attn_weight.masked_fill_(mask_bool.logical_not(), float("-inf"))
 
@@ -79,9 +89,13 @@ class OmostDenseDiffusionCrossAttention(torch.nn.Module):
             (q, k, v),
         )
 
-        dd_conds: list[DenseDiffusionConditioning] = extra_options.get("dd_conds", [])
+        dd_conds: list[DenseDiffusionConditioning] = extra_options.get(
+            "dense_diffusion_cond", []
+        )
         if dd_conds:
-            B, C, H, W = extra_options["original_shape"]
+            _, _, latent_height, latent_width = extra_options["original_shape"]
+            H, W = self.calc_hidden_state_shape(q.size(2), latent_height, latent_width)
+
             masks = []
             for dd_cond in dd_conds:
                 m = (
@@ -97,8 +111,12 @@ class OmostDenseDiffusionCrossAttention(torch.nn.Module):
 
             mask_bool = masks > 0.5
             mask_scale = (H * W) / torch.sum(masks, dim=0, keepdim=True)
-            mask_bool = mask_bool[None, None, :, :].repeat(q.size(0), q.size(1), 1, 1)
-            mask_scale = mask_scale[None, None, :, :].repeat(q.size(0), q.size(1), 1, 1)
+            mask_bool = (
+                mask_bool[None, None, :, :].repeat(q.size(0), q.size(1), 1, 1).to(q)
+            )
+            mask_scale = (
+                mask_scale[None, None, :, :].repeat(q.size(0), q.size(1), 1, 1).to(q)
+            )
         else:
             mask_bool = None
             mask_scale = None
@@ -190,7 +208,7 @@ class DenseDiffusionAddCondNode:
         work_model.model_options["transformer_options"]["dense_diffusion_cond"].append(
             DenseDiffusionConditioning(
                 cond=cond,
-                mask=mask * strength,
+                mask=mask.squeeze() * strength,
                 pooled_output=extra_fields["pooled_output"],
             )
         )
