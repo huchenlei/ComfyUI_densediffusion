@@ -251,7 +251,7 @@ class DenseDiffusionAddCondNode:
         conditioning: ComfyUIConditioning,
         mask: torch.Tensor,
         strength: float,
-    ) -> tuple[ComfyUIConditioning]:
+    ) -> tuple[ModelPatcher]:
         work_model: ModelPatcher = model.clone()
         work_model.model_options["transformer_options"].setdefault(
             "dense_diffusion_cond", []
@@ -268,7 +268,7 @@ class DenseDiffusionAddCondNode:
                 pooled_output=extra_fields["pooled_output"],
             )
         )
-        return (work_model, conditioning)
+        return (work_model,)
 
 
 NODE_CLASS_MAPPINGS = {
