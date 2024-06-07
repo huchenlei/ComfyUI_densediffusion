@@ -49,11 +49,23 @@ class OmostDenseDiffusionCrossAttention(torch.nn.Module):
         dd_conds: list[DenseDiffusionConditioning] = extra_options.get(
             "dense_diffusion_cond", []
         )
-        # Only apply dense diffusion on cond run.
-        # Ideally user do not need to set regional prompt for unconditional run.
+
         # 0 is conditional run, 1 is unconditional run.
         cond_or_uncond: list[Literal[0, 1]] = extra_options["cond_or_uncond"]
-        if dd_conds and cond_or_uncond == [0]:
+        assert len(cond_or_uncond) in (
+            1,
+            2,
+        ), f"Invalid cond_or_uncond length {len(cond_or_uncond)}."
+
+        batch_size = q.size(0)
+        cond_batch_size: int = (
+            batch_size // len(cond_or_uncond) if 0 in cond_or_uncond else 0
+        )
+        uncond_batch_size: int = q.size(0) - cond_batch_size
+
+        # Only apply dense diffusion on cond run.
+        # Ideally user do not need to set regional prompt for unconditional run.
+        if dd_conds and cond_batch_size > 0:
             _, _, latent_height, latent_width = extra_options["original_shape"]
             H, W = OmostDenseDiffusionCrossAttention.calc_hidden_state_shape(
                 q.size(2), latent_height, latent_width
@@ -74,11 +86,40 @@ class OmostDenseDiffusionCrossAttention(torch.nn.Module):
             mask_bool = masks > 0.5
             mask_scale = (H * W) / torch.sum(masks, dim=0, keepdim=True)
             mask_bool = (
-                mask_bool[None, None, :, :].repeat(q.size(0), q.size(1), 1, 1).to(q)
+                mask_bool[None, None, :, :]
+                .repeat(cond_batch_size, q.size(1), 1, 1)
+                .to(q)
             )
             mask_scale = (
-                mask_scale[None, None, :, :].repeat(q.size(0), q.size(1), 1, 1).to(q)
+                mask_scale[None, None, :, :]
+                .repeat(cond_batch_size, q.size(1), 1, 1)
+                .to(q)
             )
+
+            # Apply solid mask to unconditional part.
+            if uncond_batch_size > 0:
+                assert len(cond_or_uncond) == 2
+                uncond_first = cond_or_uncond.index(1) == 0
+
+                # Apply uncond mask at correct location.
+                if uncond_first:
+                    mask_bool = torch.cat(
+                        [torch.ones_like(mask_bool), mask_bool],
+                        dim=0,
+                    )
+                    mask_scale = torch.cat(
+                        [torch.ones_like(mask_scale), mask_scale],
+                        dim=0,
+                    )
+                else:
+                    mask_bool = torch.cat(
+                        [mask_bool, torch.ones_like(mask_bool)],
+                        dim=0,
+                    )
+                    mask_scale = torch.cat(
+                        [mask_scale, torch.ones_like(mask_scale)],
+                        dim=0,
+                    )
             return mask_bool, mask_scale
         return None, None
 
