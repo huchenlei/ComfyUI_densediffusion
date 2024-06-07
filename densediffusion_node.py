@@ -40,33 +40,47 @@ class DenseDiffusionConditioning(NamedTuple):
 class OmostDenseDiffusionCrossAttention(torch.nn.Module):
     @staticmethod
     def calc_mask_cond(
-        dd_conds: list[DenseDiffusionConditioning],
-        H: int,
-        W: int,
         q: torch.Tensor,
-    ):
+        extra_options: dict,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Calculate mask_bool and mask_scale based on given H, W.
         TODO cache this function's result."""
-        masks = []
-        for dd_cond in dd_conds:
-            m = (
-                torch.nn.functional.interpolate(
-                    dd_cond.mask[None, None, :, :], (H, W), mode="nearest-exact"
-                )
-                .flatten()
-                .unsqueeze(1)
-                .repeat(1, dd_cond.cond.size(1))
-            )
-            masks.append(m)
-        masks = torch.cat(masks, dim=1)
 
-        mask_bool = masks > 0.5
-        mask_scale = (H * W) / torch.sum(masks, dim=0, keepdim=True)
-        mask_bool = mask_bool[None, None, :, :].repeat(q.size(0), q.size(1), 1, 1).to(q)
-        mask_scale = (
-            mask_scale[None, None, :, :].repeat(q.size(0), q.size(1), 1, 1).to(q)
+        dd_conds: list[DenseDiffusionConditioning] = extra_options.get(
+            "dense_diffusion_cond", []
         )
-        return mask_bool, mask_scale
+        # Only apply dense diffusion on cond run.
+        # Ideally user do not need to set regional prompt for unconditional run.
+        # 0 is conditional run, 1 is unconditional run.
+        cond_or_uncond: list[Literal[0, 1]] = extra_options["cond_or_uncond"]
+        if dd_conds and cond_or_uncond == [0]:
+            _, _, latent_height, latent_width = extra_options["original_shape"]
+            H, W = OmostDenseDiffusionCrossAttention.calc_hidden_state_shape(
+                q.size(2), latent_height, latent_width
+            )
+            masks = []
+            for dd_cond in dd_conds:
+                m = (
+                    torch.nn.functional.interpolate(
+                        dd_cond.mask[None, None, :, :], (H, W), mode="nearest-exact"
+                    )
+                    .flatten()
+                    .unsqueeze(1)
+                    .repeat(1, dd_cond.cond.size(1))
+                )
+                masks.append(m)
+            masks = torch.cat(masks, dim=1)
+
+            mask_bool = masks > 0.5
+            mask_scale = (H * W) / torch.sum(masks, dim=0, keepdim=True)
+            mask_bool = (
+                mask_bool[None, None, :, :].repeat(q.size(0), q.size(1), 1, 1).to(q)
+            )
+            mask_scale = (
+                mask_scale[None, None, :, :].repeat(q.size(0), q.size(1), 1, 1).to(q)
+            )
+            return mask_bool, mask_scale
+        return None, None
 
     @staticmethod
     def calc_hidden_state_shape(
@@ -121,22 +135,7 @@ class OmostDenseDiffusionCrossAttention(torch.nn.Module):
             lambda t: t.view(b, -1, heads, dim_head).transpose(1, 2),
             (q, k, v),
         )
-
-        dd_conds: list[DenseDiffusionConditioning] = extra_options.get(
-            "dense_diffusion_cond", []
-        )
-        # Only apply dense diffusion on cond run.
-        # Ideally user do not need to set regional prompt for unconditional run.
-        # 0 is conditional run, 1 is unconditional run.
-        cond_or_uncond: list[Literal[0, 1]] = extra_options["cond_or_uncond"]
-        if dd_conds and cond_or_uncond == [0]:
-            _, _, latent_height, latent_width = extra_options["original_shape"]
-            H, W = self.calc_hidden_state_shape(q.size(2), latent_height, latent_width)
-            mask_bool, mask_scale = self.calc_mask_cond(dd_conds, H, W, q)
-        else:
-            mask_bool = None
-            mask_scale = None
-
+        mask_bool, mask_scale = self.calc_mask_cond(q, extra_options)
         out = self.scaled_dot_product_attention(
             q, k, v, mask_bool=mask_bool, mask_scale=mask_scale
         )
