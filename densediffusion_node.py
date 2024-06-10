@@ -1,7 +1,8 @@
 from __future__ import annotations
 import itertools
 import math
-from typing import Literal, NamedTuple
+from typing import Literal
+from dataclasses import dataclass
 
 import torch
 
@@ -28,8 +29,8 @@ def get_sd_version(model: ModelPatcher) -> StableDiffusionVersion:
     )
     return StableDiffusionVersion.SDXL if is_sdxl else StableDiffusionVersion.SD1x
 
-
-class DenseDiffusionConditioning(NamedTuple):
+@dataclass
+class DenseDiffusionConditioning:
     # Text embeddings
     cond: torch.Tensor
     # The mask to apply. Shape: [H, W]
@@ -88,12 +89,10 @@ class OmostDenseDiffusionCrossAttention(torch.nn.Module):
             mask_bool = (
                 mask_bool[None, None, :, :]
                 .repeat(cond_batch_size, q.size(1), 1, 1)
-                .to(q)
             )
             mask_scale = (
                 mask_scale[None, None, :, :]
                 .repeat(cond_batch_size, q.size(1), 1, 1)
-                .to(q)
             )
 
             # Apply solid mask to unconditional part.
@@ -214,6 +213,11 @@ class DenseDiffusionApplyNode:
             "transformer_options"
         ].get("dense_diffusion_cond", [])
         assert dd_conds, "No DenseDiffusion conditioning found!"
+
+        # Move all mask to unet device to avoid move during inference.
+        for dd_cond in dd_conds:
+            dd_cond.mask = dd_cond.mask.to(model.load_device, model.model_dtype())
+
         cond = [
             [
                 # cond
