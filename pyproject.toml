@@ -1,0 +1,14 @@
+[project]
+name = "comfyui_densediffusion"
+description = "Regional prompt with attention score manipulation"
+version = "1.0.0"
+license = "LICENSE"
+
+[project.urls]
+Repository = "https://github.com/huchenlei/ComfyUI_densediffusion"
+#  Used by Comfy Registry https://comfyregistry.org
+
+[tool.comfy]
+PublisherId = "huchenlei"
+DisplayName = "ComfyUI_densediffusion"
+Icon = ""
