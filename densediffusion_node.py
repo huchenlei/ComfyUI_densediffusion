@@ -236,11 +236,13 @@ class DenseDiffusionAddCondNode:
             "required": {
                 "model": ("MODEL",),
                 "conditioning": ("CONDITIONING",),
-                "mask": ("MASK",),
                 "strength": (
                     "FLOAT",
                     {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01},
                 ),
+            },
+            "optional": {
+                "mask": ("MASK", ),
             }
         }
 
@@ -253,8 +255,8 @@ class DenseDiffusionAddCondNode:
         self,
         model: ModelPatcher,
         conditioning: ComfyUIConditioning,
-        mask: torch.Tensor,
         strength: float,
+        mask: torch.Tensor=None,
     ) -> tuple[ModelPatcher]:
         work_model: ModelPatcher = model.clone()
         work_model.model_options["transformer_options"].setdefault(
@@ -264,6 +266,9 @@ class DenseDiffusionAddCondNode:
         cond, extra_fields = conditioning[0]
         assert isinstance(extra_fields, dict)
         assert "pooled_output" in extra_fields
+        
+        if mask == None:
+            mask = torch.full((1, 512, 512), 1.0, dtype=torch.float32, device="cpu")
 
         work_model.model_options["transformer_options"]["dense_diffusion_cond"].append(
             DenseDiffusionConditioning(
