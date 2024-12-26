@@ -2,7 +2,7 @@
 name = "comfyui_densediffusion"
 description = "Regional prompt with attention score manipulation"
 version = "1.0.1"
-license = "LICENSE"
+license = { file = "LICENSE" }
 
 [project.urls]
 Repository = "https://github.com/huchenlei/ComfyUI_densediffusion"
