@@ -1,3 +1,9 @@
+# Update
+
+2024/12/26 If there is no mask input, a solid mask is used instead.
+
+
+
 # ComfyUI_densediffusion
 DenseDiffusion custom node for ComfyUI. Implements the [DenseDiffusion](https://github.com/naver-ai/DenseDiffusion)-like method for regional prompt used in [Omost](https://github.com/lllyasviel/Omost) project.
 
