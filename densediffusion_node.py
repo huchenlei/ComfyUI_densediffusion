@@ -44,25 +44,16 @@ class OmostDenseDiffusionCrossAttention(torch.nn.Module):
         q: torch.Tensor,
         extra_options: dict,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Calculate mask_bool and mask_scale based on given H, W.
-        Updated to handle masks in [B, H, W] format as described.
-        """
-
         dd_conds: list[DenseDiffusionConditioning] = extra_options.get(
             "dense_diffusion_cond", []
         )
 
         cond_or_uncond: list[Literal[0, 1]] = extra_options["cond_or_uncond"]
-        assert len(cond_or_uncond) in (
-            1,
-            2,
-        ), f"Invalid cond_or_uncond length {len(cond_or_uncond)}."
+        assert len(cond_or_uncond) in (1, 2)
 
         batch_size = q.size(0)
-        cond_batch_size: int = (
-            batch_size // len(cond_or_uncond) if 0 in cond_or_uncond else 0
-        )
-        uncond_batch_size: int = q.size(0) - cond_batch_size
+        cond_batch_size = batch_size // len(cond_or_uncond) if 0 in cond_or_uncond else 0
+        uncond_batch_size = q.size(0) - cond_batch_size
 
         if dd_conds and cond_batch_size > 0:
             _, _, latent_height, latent_width = extra_options["original_shape"]
@@ -70,62 +61,56 @@ class OmostDenseDiffusionCrossAttention(torch.nn.Module):
                 q.size(2), latent_height, latent_width
             )
             masks = []
+            
             for dd_cond in dd_conds:
-                mask = dd_cond.mask  # Shape: (B, H, W)
-
-                # Add channel dimension to match interpolate requirements
-                if mask.dim() == 3:  # Expected input shape
-                    mask = mask.unsqueeze(1)  # Shape: (B, 1, H, W)
-                elif mask.dim() != 4:
-                    raise ValueError(
-                        f"Unexpected mask dimensions: {mask.shape}. Expected 3 or 4 dimensions."
-                    )
-
-                # Interpolate to target size
-                mask = torch.nn.functional.interpolate(mask, size=(H, W), mode="nearest-exact")  # Shape: (B, 1, H, W)
-
-                # Remove channel dimension and flatten
-                mask = mask.squeeze(1)  # Shape: (B, H, W)
-                mask = mask.flatten(start_dim=1)  # Shape: (B, H*W)
-
-                # Repeat mask to match conditioning size
-                mask = mask.unsqueeze(2).repeat(1, 1, dd_cond.cond.size(1))  # Shape: (B, H*W, cond_size)
-
-                masks.append(mask)
-
-            # Concatenate masks along the conditioning dimension
-            masks = torch.cat(masks, dim=2)  # Shape: (B, H*W, total_cond_size)
-
+                mask = dd_cond.mask
+                # Handle different mask shapes
+                if len(mask.shape) == 2:  # [H, W]
+                    mask = mask.unsqueeze(0)  # [1, H, W]
+                
+                # Ensure batch dimension matches cond_batch_size
+                if mask.size(0) == 1:
+                    mask = mask.repeat(cond_batch_size, 1, 1)
+                elif mask.size(0) != cond_batch_size:
+                    mask = mask[:cond_batch_size]  # Take first cond_batch_size masks
+                
+                # Resize mask
+                m = torch.nn.functional.interpolate(
+                    mask.unsqueeze(1),  # [B, 1, H, W]
+                    (H, W),
+                    mode="nearest-exact"
+                ).flatten(1)  # [B, H*W]
+                
+                # Repeat for each embedding dimension
+                m = m.unsqueeze(2).repeat(1, 1, dd_cond.cond.size(1))  # [B, H*W, emb_dim]
+                masks.append(m)
+            
+            masks = torch.cat(masks, dim=2)  # Concatenate along embedding dimension
+            
             mask_bool = masks > 0.5
             mask_scale = (H * W) / torch.sum(masks, dim=1, keepdim=True)
-
-            # Expand mask_bool and mask_scale for conditional batch
-            mask_bool = mask_bool.unsqueeze(1).repeat(1, q.size(1), 1, 1)  # Shape: (B, q_dim, H, W)
-            mask_scale = mask_scale.unsqueeze(1).repeat(1, q.size(1), 1, 1)  # Shape: (B, q_dim, H, W)
+            
+            # Reshape for attention computation
+            mask_bool = mask_bool.unsqueeze(1).repeat(1, q.size(1), 1, 1)
+            mask_scale = mask_scale.unsqueeze(1).repeat(1, q.size(1), 1, 1)
 
             # Handle unconditional part
             if uncond_batch_size > 0:
                 assert len(cond_or_uncond) == 2
                 uncond_first = cond_or_uncond.index(1) == 0
-
+                
+                uncond_mask_bool = torch.ones_like(mask_bool[:uncond_batch_size])
+                uncond_mask_scale = torch.ones_like(mask_scale[:uncond_batch_size])
+                
                 if uncond_first:
-                    mask_bool = torch.cat(
-                        [torch.ones_like(mask_bool), mask_bool], dim=0
-                    )
-                    mask_scale = torch.cat(
-                        [torch.ones_like(mask_scale), mask_scale], dim=0
-                    )
+                    mask_bool = torch.cat([uncond_mask_bool, mask_bool], dim=0)
+                    mask_scale = torch.cat([uncond_mask_scale, mask_scale], dim=0)
                 else:
-                    mask_bool = torch.cat(
-                        [mask_bool, torch.ones_like(mask_bool)], dim=0
-                    )
-                    mask_scale = torch.cat(
-                        [mask_scale, torch.ones_like(mask_scale)], dim=0
-                    )
+                    mask_bool = torch.cat([mask_bool, uncond_mask_bool], dim=0)
+                    mask_scale = torch.cat([mask_scale, uncond_mask_scale], dim=0)
+                    
             return mask_bool, mask_scale
-
         return None, None
-
 
     @staticmethod
     def calc_hidden_state_shape(
