@@ -1,5 +1,7 @@
 # Update
 
+2024/12/27 Changed to allow multiple masks to be entered in batches.
+
 2024/12/26 If there is no mask input, a solid mask is used instead.
 
 
