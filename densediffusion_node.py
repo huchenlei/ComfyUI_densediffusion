@@ -126,11 +126,10 @@ class OmostDenseDiffusionCrossAttention(torch.nn.Module):
     def calc_hidden_state_shape(
         sequence_length: int, H: int, W: int
     ) -> tuple[int, int]:
-        # sequence_length = mask_h * mask_w
-        # sequence_length = (latent_height * factor) * (latent_height * factor)
-        # sequence_length = (latent_height * latent_height) * factor ^ 2
-        factor = math.sqrt(sequence_length / (H * W))
-        return int(H * factor), int(W * factor)
+        ratio = W / H
+        mask_h = int(round(math.sqrt(sequence_length / ratio)))
+        mask_w = int(round(math.sqrt(sequence_length * ratio)))
+        return mask_h, mask_w
 
     @staticmethod
     def scaled_dot_product_attention(
