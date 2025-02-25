@@ -1,7 +1,7 @@
 [project]
 name = "comfyui_densediffusion"
 description = "Regional prompt with attention score manipulation"
-version = "1.0.1"
+version = "1.0.2"
 license = { file = "LICENSE" }
 
 [project.urls]
